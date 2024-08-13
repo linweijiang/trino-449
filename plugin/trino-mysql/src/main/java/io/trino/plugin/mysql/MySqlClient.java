@@ -109,6 +109,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.AbstractMap.SimpleEntry;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -1082,6 +1083,43 @@ public class MySqlClient
             throwIfInstanceOf(e, TrinoException.class);
             throw new TrinoException(JDBC_ERROR, "Failed fetching statistics for table: " + handle, e);
         }
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        List<String> primaryKeyList = new ArrayList<>();
+        try (Connection connection = connectionFactory.openConnection(session);
+                ResultSet resultSet = getPrimaryKeyColumn(tableHandle, connection.getMetaData())) {
+            while (resultSet.next()) {
+                primaryKeyList.add(resultSet.getString("COLUMN_NAME"));
+            }
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+
+        List<JdbcColumnHandle> baseColumns = super.getColumns(session, tableHandle);
+        List<JdbcColumnHandle> columns = new ArrayList<>();
+        for (JdbcColumnHandle columnHandle : baseColumns) {
+            JdbcColumnHandle.Builder builder = JdbcColumnHandle
+                    .builderFrom(columnHandle);
+            if (primaryKeyList.contains(columnHandle.getColumnName())) {
+                builder.setComment(Optional.of("[PK]" + (columnHandle.getComment().orElse(""))));
+            }
+            columns.add(builder.build());
+        }
+        return columns;
+    }
+
+    private ResultSet getPrimaryKeyColumn(JdbcTableHandle tableHandle, DatabaseMetaData metadata)
+            throws SQLException
+    {
+        RemoteTableName remoteTableName = tableHandle.getRequiredNamedRelation().getRemoteTableName();
+        return metadata.getPrimaryKeys(
+                remoteTableName.getCatalogName().orElse(null),
+                remoteTableName.getSchemaName().orElse(null),
+                remoteTableName.getTableName());
     }
 
     private TableStatistics readTableStatistics(ConnectorSession session, JdbcTableHandle table)
